@@ -1,2 +1,2 @@
 # garbage-classification
-graduation project
+graduation project//
