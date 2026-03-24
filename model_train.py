@@ -1,198 +1,247 @@
 import copy
+import random
 import time
+from pathlib import Path
 
-import torch
-from torchvision.datasets import ImageFolder
-from torchvision import transforms
-import torch.utils.data as Data
-import numpy as np
 import matplotlib.pyplot as plt
-from model import ResNet18, Residual
-import torch.nn as nn
+import numpy as np
 import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
 
-def train_val_data_process():
-    # 定义数据集的路径
-    #改：ROOT_TRAIN = r'data\train'
-    ROOT_TRAIN = "data/train"
-    normalize = transforms.Normalize([0.20317676,0.19447766,0.18582652] ,[0.07809663,0.07368403,0.07145016])
-    # 定义数据集处理方法变量
-    train_transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), normalize])
-    # 加载数据集
-    train_data = ImageFolder(ROOT_TRAIN, transform=train_transform)
-
-    train_data, val_data = Data.random_split(train_data, [round(0.8*len(train_data)), round(0.2*len(train_data))])
-    train_dataloader = Data.DataLoader(dataset=train_data,
-                                       batch_size=32,
-                                       shuffle=True,
-                                       num_workers=2)
-
-    val_dataloader = Data.DataLoader(dataset=val_data,
-                                       batch_size=32,
-                                       shuffle=True,
-                                       num_workers=2)
-
-    return train_dataloader, val_dataloader
+from model import build_model
 
 
+TRAIN_DIR = Path('data/train')
+VAL_DIR = Path('data/val')
+MODEL_SAVE_PATH = 'best_model.pth'
+RESULT_SAVE_PATH = 'train_history.csv'
+BATCH_SIZE = 32
+NUM_EPOCHS = 20
+LEARNING_RATE = 3e-4
+WEIGHT_DECAY = 1e-4
+NUM_WORKERS = 2
+SEED = 42
 
-def train_model_process(model, train_dataloader, val_dataloader, num_epochs):
-    # 设定训练所用到的设备，有GPU用GPU没有GPU用CPU
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # 使用Adam优化器，学习率为0.001
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    # 损失函数为交叉熵函数
-    criterion = nn.CrossEntropyLoss()
-    # 将模型放入到训练设备中
+# 这里的均值和标准差需要根据 mean_std.py 重新统计得到的结果进行替换。
+MEAN = [0.20317676, 0.19447766, 0.18582652]
+STD = [0.27945775, 0.2714471, 0.26730162]
+
+
+def set_seed(seed=42):
+    """
+    设置随机种子，尽量保证每次训练结果一致。
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+
+def get_transforms():
+    """
+    分别返回训练集和验证集的图像预处理流程。
+    """
+    train_transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),
+        transforms.RandomHorizontalFlip(p=0.5),
+        transforms.RandomRotation(10),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=MEAN, std=STD),
+    ])
+
+    val_transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=MEAN, std=STD),
+    ])
+    return train_transform, val_transform
+
+
+
+def create_dataloaders():
+    """
+    加载训练集与验证集，并构建 DataLoader。
+    """
+    train_transform, val_transform = get_transforms()
+    train_dataset = ImageFolder(TRAIN_DIR, transform=train_transform)
+    val_dataset = ImageFolder(VAL_DIR, transform=val_transform)
+
+    train_loader = DataLoader(
+        dataset=train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+    val_loader = DataLoader(
+        dataset=val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+    return train_dataset, val_dataset, train_loader, val_loader
+
+
+
+def train_one_epoch(model, dataloader, criterion, optimizer, device):
+    """
+    执行一轮训练，返回该轮训练损失和准确率。
+    """
+    model.train()
+    running_loss = 0.0
+    running_corrects = 0
+    sample_count = 0
+
+    for inputs, labels in dataloader:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss = criterion(outputs, labels)
+        preds = torch.argmax(outputs, dim=1)
+
+        loss.backward()
+        optimizer.step()
+
+        running_loss += loss.item() * inputs.size(0)
+        running_corrects += torch.sum(preds == labels).item()
+        sample_count += inputs.size(0)
+
+    epoch_loss = running_loss / sample_count
+    epoch_acc = running_corrects / sample_count
+    return epoch_loss, epoch_acc
+
+
+
+def validate_one_epoch(model, dataloader, criterion, device):
+    """
+    在验证集上评估模型，返回验证损失和准确率。
+    """
+    model.eval()
+    running_loss = 0.0
+    running_corrects = 0
+    sample_count = 0
+
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            preds = torch.argmax(outputs, dim=1)
+
+            running_loss += loss.item() * inputs.size(0)
+            running_corrects += torch.sum(preds == labels).item()
+            sample_count += inputs.size(0)
+
+    epoch_loss = running_loss / sample_count
+    epoch_acc = running_corrects / sample_count
+    return epoch_loss, epoch_acc
+
+
+
+def train_model_process(model, train_loader, val_loader, class_names, num_epochs=NUM_EPOCHS):
+    """
+    执行完整训练流程，并保存验证集表现最好的模型。
+    """
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
-    # 复制当前模型的参数
-    best_model_wts = copy.deepcopy(model.state_dict())
 
-    # 初始化参数
-    # 最高准确度
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.5)
+
+    best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
-    # 训练集损失列表
-    train_loss_all = []
-    # 验证集损失列表
-    val_loss_all = []
-    # 训练集准确度列表
-    train_acc_all = []
-    # 验证集准确度列表
-    val_acc_all = []
-    # 当前时间
+    history = []
     since = time.time()
 
     for epoch in range(num_epochs):
-        print("Epoch {}/{}".format(epoch, num_epochs-1))
-        print("-"*10)
+        print(f'Epoch {epoch + 1}/{num_epochs}')
+        print('-' * 20)
 
-        # 初始化参数
-        # 训练集损失函数
-        train_loss = 0.0
-        # 训练集准确度
-        train_corrects = 0
-        # 验证集损失函数
-        val_loss = 0.0
-        # 验证集准确度
-        val_corrects = 0
-        # 训练集样本数量
-        train_num = 0
-        # 验证集样本数量
-        val_num = 0
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        val_loss, val_acc = validate_one_epoch(model, val_loader, criterion, device)
+        scheduler.step()
 
-        # 对每一个mini-batch训练和计算
-        for step, (b_x, b_y) in enumerate(train_dataloader):
-            # 将特征放入到训练设备中
-            b_x = b_x.to(device)
-            # 将标签放入到训练设备中
-            b_y = b_y.to(device)
-            # 设置模型为训练模式
-            model.train()
+        history.append({
+            'epoch': epoch + 1,
+            'train_loss': train_loss,
+            'train_acc': train_acc,
+            'val_loss': val_loss,
+            'val_acc': val_acc,
+            'lr': optimizer.param_groups[0]['lr'],
+        })
 
-            # 前向传播过程，输入为一个batch，输出为一个batch中对应的预测
-            output = model(b_x)
-            # 查找每一行中最大值对应的行标
-            pre_lab = torch.argmax(output, dim=1)
-            # 计算每一个batch的损失函数
-            loss = criterion(output, b_y)
+        print(f'训练集损失: {train_loss:.4f} 训练集准确率: {train_acc:.4f}')
+        print(f'验证集损失: {val_loss:.4f} 验证集准确率: {val_acc:.4f}')
 
-            # 将梯度初始化为0
-            optimizer.zero_grad()
-            # 反向传播计算
-            loss.backward()
-            # 根据网络反向传播的梯度信息来更新网络的参数，以起到降低loss函数计算值的作用
-            optimizer.step()
-            # 对损失函数进行累加
-            train_loss += loss.item() * b_x.size(0)
-            # 如果预测正确，则准确度train_corrects加1
-            train_corrects += torch.sum(pre_lab == b_y.data)
-            # 当前用于训练的样本数量
-            train_num += b_x.size(0)
-        for step, (b_x, b_y) in enumerate(val_dataloader):
-            # 将特征放入到验证设备中
-            b_x = b_x.to(device)
-            # 将标签放入到验证设备中
-            b_y = b_y.to(device)
-            # 设置模型为评估模式
-            model.eval()
-            # 前向传播过程，输入为一个batch，输出为一个batch中对应的预测
-            output = model(b_x)
-            # 查找每一行中最大值对应的行标
-            pre_lab = torch.argmax(output, dim=1)
-            # 计算每一个batch的损失函数
-            loss = criterion(output, b_y)
-
-
-            # 对损失函数进行累加
-            val_loss += loss.item() * b_x.size(0)
-            # 如果预测正确，则准确度train_corrects加1
-            val_corrects += torch.sum(pre_lab == b_y.data)
-            # 当前用于验证的样本数量
-            val_num += b_x.size(0)
-
-        # 计算并保存每一次迭代的loss值和准确率
-        # 计算并保存训练集的loss值
-        train_loss_all.append(train_loss / train_num)
-        # 计算并保存训练集的准确率
-        train_acc_all.append(train_corrects.double().item() / train_num)
-
-        # 计算并保存验证集的loss值
-        val_loss_all.append(val_loss / val_num)
-        # 计算并保存验证集的准确率
-        val_acc_all.append(val_corrects.double().item() / val_num)
-
-        print("{} train loss:{:.4f} train acc: {:.4f}".format(epoch, train_loss_all[-1], train_acc_all[-1]))
-        print("{} val loss:{:.4f} val acc: {:.4f}".format(epoch, val_loss_all[-1], val_acc_all[-1]))
-
-        if val_acc_all[-1] > best_acc:
-            # 保存当前最高准确度
-            best_acc = val_acc_all[-1]
-            # 保存当前最高准确度的模型参数
+        if val_acc > best_acc:
+            best_acc = val_acc
             best_model_wts = copy.deepcopy(model.state_dict())
+            torch.save({
+                'model_state_dict': best_model_wts,
+                'best_acc': best_acc,
+                'class_names': class_names,
+                'mean': MEAN,
+                'std': STD,
+            }, MODEL_SAVE_PATH)
+            print(f'已更新最优模型，当前最佳验证准确率: {best_acc:.4f}')
 
-        # 计算训练和验证的耗时
-        time_use = time.time() - since
-        print("训练和验证耗费的时间{:.0f}m{:.0f}s".format(time_use//60, time_use%60))
+        elapsed = time.time() - since
+        print(f'累计训练时间: {elapsed // 60:.0f}m {elapsed % 60:.0f}s\n')
 
-    # 选择最优参数，保存最优参数的模型
     model.load_state_dict(best_model_wts)
-    # torch.save(model.load_state_dict(best_model_wts), "C:/Users/86159/Desktop/LeNet/best_model.pth")
-    #torch.save(best_model_wts, "C:/Users/86159/Desktop/ResNet18-2/best_model.pth") 原来的
-    torch.save(best_model_wts, "best_model.pth")
+    history_df = pd.DataFrame(history)
+    history_df.to_csv(RESULT_SAVE_PATH, index=False)
+    return history_df
 
 
-    train_process = pd.DataFrame(data={"epoch":range(num_epochs),
-                                       "train_loss_all":train_loss_all,
-                                       "val_loss_all":val_loss_all,
-                                       "train_acc_all":train_acc_all,
-                                       "val_acc_all":val_acc_all,})
 
-    return train_process
-
-
-def matplot_acc_loss(train_process):
-    # 显示每一次迭代后的训练集和验证集的损失函数和准确率
+def plot_acc_loss(train_process):
+    """
+    绘制训练集与验证集的损失和准确率曲线。
+    """
     plt.figure(figsize=(12, 4))
+
     plt.subplot(1, 2, 1)
-    plt.plot(train_process['epoch'], train_process.train_loss_all, "ro-", label="Train loss")
-    plt.plot(train_process['epoch'], train_process.val_loss_all, "bs-", label="Val loss")
+    plt.plot(train_process['epoch'], train_process['train_loss'], 'ro-', label='训练损失')
+    plt.plot(train_process['epoch'], train_process['val_loss'], 'bs-', label='验证损失')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
     plt.legend()
-    plt.xlabel("epoch")
-    plt.ylabel("Loss")
+
     plt.subplot(1, 2, 2)
-    plt.plot(train_process['epoch'], train_process.train_acc_all, "ro-", label="Train acc")
-    plt.plot(train_process['epoch'], train_process.val_acc_all, "bs-", label="Val acc")
-    plt.xlabel("epoch")
-    plt.ylabel("acc")
+    plt.plot(train_process['epoch'], train_process['train_acc'], 'ro-', label='训练准确率')
+    plt.plot(train_process['epoch'], train_process['val_acc'], 'bs-', label='验证准确率')
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
     plt.legend()
+
+    plt.tight_layout()
     plt.show()
 
 
 if __name__ == '__main__':
-    # 加载需要的模型
-    ResNet18 = ResNet18(Residual)
-    # 加载数据集
-    train_data, val_data = train_val_data_process()
-    # 利用现有的模型进行模型的训练
-    train_process = train_model_process(ResNet18, train_data, val_data, num_epochs=30)
-    matplot_acc_loss(train_process)
+    set_seed(SEED)
+    train_dataset, val_dataset, train_loader, val_loader = create_dataloaders()
+
+    print('训练集类别映射:', train_dataset.class_to_idx)
+    print(f'训练集样本数: {len(train_dataset)}')
+    print(f'验证集样本数: {len(val_dataset)}')
+
+    model = build_model(num_classes=len(train_dataset.classes), pretrained=True)
+    history_df = train_model_process(model, train_loader, val_loader, train_dataset.classes, num_epochs=NUM_EPOCHS)
+    plot_acc_loss(history_df)

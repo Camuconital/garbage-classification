@@ -1,106 +1,130 @@
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
-import torch.utils.data as Data
+from sklearn.metrics import confusion_matrix
+from torch.utils.data import DataLoader
 from torchvision import transforms
-from torchvision.datasets import FashionMNIST
-from model import ResNet18, Residual
 from torchvision.datasets import ImageFolder
-from PIL import Image
 
-def test_data_process():
-    # 定义数据集的路径
-    #ROOT_TRAIN = r'data\test'
-    ROOT_TRAIN = "data/test"
-    normalize = transforms.Normalize([0.20317676,0.19447766,0.18582652] ,[0.07809663,0.07368403,0.07145016])
-    # 定义数据集处理方法变量
-    test_transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), normalize])
-    # 加载数据集
-    test_data = ImageFolder(ROOT_TRAIN, transform=test_transform)
-
-    test_dataloader = Data.DataLoader(dataset=test_data,
-                                       batch_size=32,#原来是1
-                                       shuffle=True,
-                                       num_workers=0)
-    return test_dataloader
+from model import build_model
 
 
-def test_model_process(model, test_dataloader):
-    # 设定测试所用到的设备，有GPU用GPU没有GPU用CPU
-    device = "cuda" if torch.cuda.is_available() else 'cpu'
+TEST_DIR = Path('data/test')
+MODEL_SAVE_PATH = 'best_model.pth'
+BATCH_SIZE = 32
+NUM_WORKERS = 2
+DEFAULT_MEAN = [0.20317676, 0.19447766, 0.18582652]
+DEFAULT_STD = [0.27945775, 0.2714471, 0.26730162]
 
-    # 讲模型放入到训练设备中
+
+def build_test_transform(mean, std):
+    """
+    构建测试阶段使用的图像预处理流程。
+    """
+    return transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=mean, std=std),
+    ])
+
+
+
+def create_test_dataloader(mean, std):
+    """
+    加载测试集并构建 DataLoader。
+    """
+    test_dataset = ImageFolder(TEST_DIR, transform=build_test_transform(mean, std))
+    test_loader = DataLoader(
+        dataset=test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
+    )
+    return test_dataset, test_loader
+
+
+
+def evaluate_model(model, dataloader, device):
+    """
+    在测试集上评估模型，并返回预测结果与真实标签。
+    """
+    model.eval()
+    all_preds = []
+    all_labels = []
+
+    with torch.no_grad():
+        for inputs, labels in dataloader:
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+
+            outputs = model(inputs)
+            preds = torch.argmax(outputs, dim=1)
+
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+    return np.array(all_labels), np.array(all_preds)
+
+
+
+def print_per_class_accuracy(conf_matrix, class_names):
+    """
+    输出每个类别的分类准确率。
+    """
+    print('各类别准确率:')
+    for index, class_name in enumerate(class_names):
+        class_total = conf_matrix[index].sum()
+        class_correct = conf_matrix[index, index]
+        class_acc = class_correct / class_total if class_total > 0 else 0.0
+        print(f'{class_name}: {class_acc:.4f}')
+
+
+
+def plot_confusion_matrix(conf_matrix, class_names):
+    """
+    绘制混淆矩阵热力图。
+    """
+    plt.figure(figsize=(10, 8))
+    plt.imshow(conf_matrix, interpolation='nearest', cmap=plt.cm.Blues)
+    plt.title('混淆矩阵')
+    plt.colorbar()
+
+    tick_marks = np.arange(len(class_names))
+    plt.xticks(tick_marks, class_names, rotation=45, ha='right')
+    plt.yticks(tick_marks, class_names)
+    plt.xlabel('预测类别')
+    plt.ylabel('真实类别')
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == '__main__':
+    checkpoint = torch.load(MODEL_SAVE_PATH, map_location='cpu')
+    class_names = checkpoint.get('class_names')
+    mean = checkpoint.get('mean', DEFAULT_MEAN)
+    std = checkpoint.get('std', DEFAULT_STD)
+
+    if class_names is None:
+        raise ValueError('模型文件中未找到类别名称信息，请重新训练并保存模型。')
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = build_model(num_classes=len(class_names), pretrained=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
 
-    # 初始化参数
-    test_corrects = 0.0
-    test_num = 0
+    test_dataset, test_loader = create_test_dataloader(mean, std)
+    print('测试集类别映射:', test_dataset.class_to_idx)
+    print(f'测试集样本数: {len(test_dataset)}')
 
-    # 只进行前向传播计算，不计算梯度，从而节省内存，加快运行速度
-    with torch.no_grad():
-        for test_data_x, test_data_y in test_dataloader:
-            # 将特征放入到测试设备中
-            test_data_x = test_data_x.to(device)
-            # 将标签放入到测试设备中
-            test_data_y = test_data_y.to(device)
-            # 设置模型为评估模式
-            model.eval()
-            # 前向传播过程，输入为测试数据集，输出为对每个样本的预测值
-            output= model(test_data_x)
-            # 查找每一行中最大值对应的行标
-            pre_lab = torch.argmax(output, dim=1)
-            # 如果预测正确，则准确度test_corrects加1
-            test_corrects += torch.sum(pre_lab == test_data_y.data)
-            # 将所有的测试样本进行累加
-            test_num += test_data_x.size(0)
+    all_labels, all_preds = evaluate_model(model, test_loader, device)
+    test_acc = (all_labels == all_preds).mean()
+    print(f'测试集整体准确率: {test_acc:.4f}')
 
-    # 计算测试准确率
-    test_acc = test_corrects.double().item() / test_num
-    print("测试的准确率为：", test_acc)
-
-
-if __name__ == "__main__":
-    # 加载模型
-    model = ResNet18(Residual)
-    model.load_state_dict(torch.load('best_model.pth'))
-    # # 利用现有的模型进行模型的测试
-    test_dataloader = test_data_process()
-    test_model_process(model, test_dataloader)
-
-    # # 设定测试所用到的设备，有GPU用GPU没有GPU用CPU
-    # device = "cuda" if torch.cuda.is_available() else 'cpu'
-    # model = model.to(device)
-    # # battery, biological, cardboard, clothes, glass, metal, paper, plastic, shoes, trash
-    # #classes = ['Arborio', 'Basmati', 'Ipsala', 'Jasmine', 'Karacadag']
-    # classes = ['battery', 'biological', 'cardboard', 'clothes', 'glass','metal', 'paper', 'plastic', 'shoes', 'trash']
-    # with torch.no_grad():
-    #     for b_x, b_y in test_dataloader:
-    #         b_x = b_x.to(device)
-    #         b_y = b_y.to(device)
-    #
-    #         # 设置模型为验证模型
-    #         model.eval()
-    #         output = model(b_x)
-    #         pre_lab = torch.argmax(output, dim=1)
-    #         result = pre_lab.item()
-    #         label = b_y.item()
-    #         print("预测值：",  classes[result], "------", "真实值：", classes[label])
-
-
-    # image = Image.open('data/test/Ipsala/Ipsala (924).jpg')
-    # normalize = transforms.Normalize([0.0420662, 0.04281093, 0.04413987], [0.03315472, 0.03433457, 0.03628447])
-    # # 定义数据集处理方法变量
-    # test_transform = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor(), normalize])
-    # image = test_transform(image)
-    #
-    # # 添加批次维度
-    # image = image.unsqueeze(0)
-    #
-    # with torch.no_grad():
-    #     model.eval()
-    #     image = image.to(device)
-    #     output = model(image)
-    #     pre_lab = torch.argmax(output, dim=1)
-    #     result = pre_lab.item()
-    # print("预测值：",  classes[result])
-
-
-
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+    print('混淆矩阵:')
+    print(conf_matrix)
+    print_per_class_accuracy(conf_matrix, class_names)
+    plot_confusion_matrix(conf_matrix, class_names)
