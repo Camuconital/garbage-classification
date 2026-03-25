@@ -15,8 +15,8 @@ TEST_DIR = Path('data/test')
 MODEL_SAVE_PATH = 'best_model.pth'
 BATCH_SIZE = 32
 NUM_WORKERS = 2
-DEFAULT_MEAN = [0.20317676, 0.19447766, 0.18582652]
-DEFAULT_STD = [0.27945775, 0.2714471, 0.26730162]
+DEFAULT_MEAN = [0.485, 0.456, 0.406]
+DEFAULT_STD = [0.229, 0.224, 0.225]
 
 
 def build_test_transform(mean, std):
