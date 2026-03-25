@@ -20,11 +20,15 @@ VAL_DIR = Path('data/val')
 MODEL_SAVE_PATH = 'best_model.pth'
 RESULT_SAVE_PATH = 'train_history.csv'
 BATCH_SIZE = 32
-NUM_EPOCHS = 20
+NUM_EPOCHS = 30
 LEARNING_RATE = 3e-4
 WEIGHT_DECAY = 1e-4
 NUM_WORKERS = 2
 SEED = 42
+ATTENTION_TYPE = 'se'
+EARLY_STOPPING_MIN_EPOCHS = 10
+EARLY_STOPPING_PATIENCE = 6
+EARLY_STOPPING_MIN_DELTA = 0.002
 
 # 这里的均值和标准差需要根据 mean_std.py 重新统计得到的结果进行替换。
 MEAN = [0.20317676, 0.19447766, 0.18582652]
@@ -165,6 +169,7 @@ def train_model_process(model, train_loader, val_loader, class_names, num_epochs
 
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
+    epochs_no_improve = 0
     history = []
     since = time.time()
 
@@ -188,7 +193,7 @@ def train_model_process(model, train_loader, val_loader, class_names, num_epochs
         print(f'训练集损失: {train_loss:.4f} 训练集准确率: {train_acc:.4f}')
         print(f'验证集损失: {val_loss:.4f} 验证集准确率: {val_acc:.4f}')
 
-        if val_acc > best_acc:
+        if val_acc > (best_acc + EARLY_STOPPING_MIN_DELTA):
             best_acc = val_acc
             best_model_wts = copy.deepcopy(model.state_dict())
             torch.save({
@@ -199,9 +204,19 @@ def train_model_process(model, train_loader, val_loader, class_names, num_epochs
                 'std': STD,
             }, MODEL_SAVE_PATH)
             print(f'已更新最优模型，当前最佳验证准确率: {best_acc:.4f}')
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
 
         elapsed = time.time() - since
         print(f'累计训练时间: {elapsed // 60:.0f}m {elapsed % 60:.0f}s\n')
+
+        if (epoch + 1) >= EARLY_STOPPING_MIN_EPOCHS and epochs_no_improve >= EARLY_STOPPING_PATIENCE:
+            print(
+                f'触发早停：连续 {EARLY_STOPPING_PATIENCE} 轮验证准确率提升不足 '
+                f'{EARLY_STOPPING_MIN_DELTA:.4f}，训练在第 {epoch + 1} 轮结束。'
+            )
+            break
 
     model.load_state_dict(best_model_wts)
     history_df = pd.DataFrame(history)
@@ -242,6 +257,10 @@ if __name__ == '__main__':
     print(f'训练集样本数: {len(train_dataset)}')
     print(f'验证集样本数: {len(val_dataset)}')
 
-    model = build_model(num_classes=len(train_dataset.classes), pretrained=True)
+    model = build_model(
+        num_classes=len(train_dataset.classes),
+        pretrained=True,
+        attention_type=ATTENTION_TYPE,
+    )
     history_df = train_model_process(model, train_loader, val_loader, train_dataset.classes, num_epochs=NUM_EPOCHS)
     plot_acc_loss(history_df)

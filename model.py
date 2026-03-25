@@ -9,13 +9,36 @@ CLASS_NAMES = [
 ]
 
 
-def build_model(num_classes=10, pretrained=True):
+class SEModule(nn.Module):
+    """
+    Squeeze-and-Excitation 注意力模块。
+    """
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        reduced_channels = max(channels // reduction, 4)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, reduced_channels, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reduced_channels, channels, bias=False),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.shape
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+
+def build_model(num_classes=10, pretrained=True, attention_type='se'):
     """
     构建用于垃圾分类的 ResNet18 模型。
 
     参数:
         num_classes: 分类类别数量。
         pretrained: 是否加载 ImageNet 预训练权重。
+        attention_type: 注意力模块类型，支持 'se' 或 None。
     """
     if pretrained:
         weights = models.ResNet18_Weights.DEFAULT
@@ -24,6 +47,12 @@ def build_model(num_classes=10, pretrained=True):
 
     # 加载 torchvision 中已经实现好的 ResNet18。
     model = models.resnet18(weights=weights)
+
+    # 在 ResNet18 的最后一个残差阶段后增加注意力模块。
+    if attention_type == 'se':
+        model.layer4.add_module('se_attention', SEModule(channels=512))
+    elif attention_type is not None:
+        raise ValueError(f"不支持的注意力类型: {attention_type}，请使用 'se' 或 None。")
 
     # 将最后的全连接层替换为当前任务对应的分类层。
     in_features = model.fc.in_features
