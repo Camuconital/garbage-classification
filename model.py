@@ -5,11 +5,11 @@ from torchvision import models
 
 CLASS_NAMES = [
     'battery', 'biological', 'cardboard', 'clothes', 'glass',
-    'metal', 'paper', 'plastic', 'shoes', 'trash'
+    'mask', 'metal', 'paper', 'plastic', 'shoes', 'toothbrush', 'trash'
 ]
 
 
-def build_model(num_classes=10, pretrained=True):
+def build_model(num_classes=len(CLASS_NAMES), pretrained=True):
     """
     构建用于垃圾分类的 ResNet18 模型。
 
