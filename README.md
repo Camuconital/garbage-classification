@@ -8,7 +8,7 @@
 - `mean_std.py`：统计数据集的 RGB 三通道均值和标准差。
 - `model.py`：构建用于垃圾分类的 ResNet18 模型。
 - `model_train.py`：执行模型训练并保存最佳权重。
-- `model_test.py`：在测试集上评估模型并输出混淆矩阵。
+- `model_test.py`：在测试集上评估模型，输出混淆矩阵，并导出 glass/plastic 双向误分类样本路径。
 
 ## 推荐使用流程
 
@@ -17,3 +17,18 @@
 3. 运行 `python mean_std.py` 统计均值和标准差，并同步更新到训练与测试脚本中。
 4. 运行 `python model_train.py` 开始训练。
 5. 运行 `python model_test.py` 查看测试结果。
+
+## Colab 运行示例
+
+在 Colab 中可按如下顺序执行：
+
+```python
+%matplotlib inline
+%run model_train.py
+%run model_test.py
+```
+
+其中 `model_test.py` 会：
+- 打印 `glass -> plastic` 与 `plastic -> glass` 的误分类图片路径；
+- 将路径写入 `misclassified_glass_plastic.txt`；
+- 在输出区可视化这两类方向的部分错分图，便于快速人工检查。
