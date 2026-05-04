@@ -53,7 +53,7 @@ def predict(image: Image.Image):
     接收单张图片并返回 Top-3 预测结果。
     """
     if image is None:
-        return '请先上传一张图片。', None
+        return 'Please upload an image first.', None
 
     image = image.convert('RGB')
     tensor = TRANSFORM(image).unsqueeze(0)
@@ -69,7 +69,7 @@ def predict(image: Image.Image):
     best_idx = int(torch.argmax(probs).item())
     best_name = CLASS_NAMES[best_idx]
     best_prob = float(probs[best_idx].item())
-    summary = f'预测类别：{best_name}（置信度：{best_prob:.2%}）'
+    summary = f'Predicted class: {best_name} (confidence: {best_prob:.2%})'
     return summary, top_result
 
 
@@ -77,18 +77,18 @@ def build_demo():
     """
     构建 Gradio 页面。
     """
-    with gr.Blocks(title='垃圾分类识别系统') as demo:
-        gr.Markdown('## 垃圾分类识别系统（Gradio）')
-        gr.Markdown('上传一张图片，模型会自动输出预测类别与各类别概率。')
+    with gr.Blocks(title='Garbage Classification Recognition System') as demo:
+        gr.Markdown('## Garbage Classification Recognition System (Gradio)')
+        gr.Markdown('Upload an image and the model will automatically output the predicted class and class probabilities.')
 
         with gr.Row():
             with gr.Column(scale=1):
-                image_input = gr.Image(type='pil', label='上传图片')
-                predict_btn = gr.Button('开始识别', variant='primary')
-                clear_btn = gr.Button('清空')
+                image_input = gr.Image(type='pil', label='Upload Image')
+                predict_btn = gr.Button('Start Recognition', variant='primary')
+                clear_btn = gr.Button('Clear')
             with gr.Column(scale=1):
-                result_text = gr.Textbox(label='识别结果', interactive=False)
-                result_label = gr.Label(label='Top-3 概率')
+                result_text = gr.Textbox(label='Recognition Result', interactive=False)
+                result_label = gr.Label(label='Top-3 Probabilities')
 
         predict_btn.click(
             fn=predict,
@@ -104,7 +104,7 @@ def build_demo():
         gr.Examples(
             examples=[],
             inputs=image_input,
-            label='你可以把常用测试图片路径添加到 gr.Examples 中。',
+            label='You can add commonly used test image paths to gr.Examples.',
         )
 
     return demo
